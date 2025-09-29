@@ -1,0 +1,11 @@
+cd "/workspace/deep参考1"
+bash
+git add .
+git commit -m "环境配置，实验迁移"
+git push
+
+requirements.txt → 标准依赖清单，直接用 pip install -r requirements.txt 就能复现环境。
+
+full_packages.txt → 更详细的依赖版本记录。
+
+env_info.txt → 环境和系统信息，方便定位配置问题。
