@@ -1,7 +1,14 @@
 cd "/workspace/deep参考1"
 bash
 git add .
-git commit -m "环境配置，实验迁移"
+git commit -m "创建`train2.py` 详情见技术报告：train2.py的修改情况
+流程图见/workspace/deep参考1/流程图/20251002train2流程图.png
+
+在运行train2.py之前，需要做两件事：
+1，modeling/deeplab.py (接口修改)
+2，modeling/msg_fenet.py构建
+经过讨论采用报告二，详情见日期：技术构建报告 (最终版 2.0)：MSG-FENet Stage 2 网络架构
+流程图见/workspace/deep参考1/流程图/20251002技术构建报告 (最终版 2.0)：MSG-FENet Stage 2 网络架构.png"
 git push
 
 requirements.txt → 标准依赖清单，直接用 pip install -r requirements.txt 就能复现环境。
