@@ -1,22 +1,8 @@
 cd "/workspace/deep参考1"
 bash
 git add .
-git commit -m "2025/10/03
-1,升级 `deeplab.py` 接口
-2,msg_fenet.py构建
-已完成，详情见2025/10/03 技术构建报告modeling/deeplab.py (接口修改)和modeling/msg_fenet.py构建
-流程图见还没弄
-
-修改和调试1,升级 `deeplab.py` 接口2,msg_fenet.py构建
-详情见2025/10/03 技术报告：MSG-FENet Stage 2 集成测试调试与修复
-
-14:41
-
-创建 Stage 2 训练脚本 (`train2.py`)
-详情见2025/10/03 技术报告：MSG-FENet Stage 2 集成测试调试与修复
-流程图见/workspace/deep参考1/流程图/20251003流程图：`train2.py` 核心逻辑
-附：代码审查与修改报告(`train2.py`)
-附：运行`train2.py`"
+git commit -m "2026/02/26
+将过去错误版本先保存，采用2025/09/26那个版本"
 git push
 
 requirements.txt → 标准依赖清单，直接用 pip install -r requirements.txt 就能复现环境。
