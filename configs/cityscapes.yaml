@@ -1,0 +1,3 @@
+loss:
+  objectness:
+    pos_weight: 20.0 # 在这里设置你的基线值
