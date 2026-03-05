@@ -86,13 +86,26 @@ class SegmentationLosses(object):
     def CrossEntropyLoss(self, logit: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return self.semantic_ce(logit, target.long())
 
+    # =========================================================================
+    # 【核心重构】：满血版 Focal Loss，拔掉背景稀释的保险栓
+    # =========================================================================
     def FocalLoss(self, logit: torch.Tensor, target: torch.Tensor, gamma: int = 2, alpha: float = 0.5) -> torch.Tensor:
-        logpt = -self.focal_base_ce(logit, target.long())
-        pt = torch.exp(logpt)
-        focal_term = -((1 - pt) ** gamma) * logpt
+        # ce_loss 形状为 [B, H, W]，其中 target 为 ignore_index (255) 的地方值为 0
+        ce_loss = self.focal_base_ce(logit, target.long())
+        
+        pt = torch.exp(-ce_loss)
+        focal_term = ((1 - pt) ** gamma) * ce_loss
+        
         if alpha is not None:
             focal_term *= alpha
-        return focal_term.mean()
+            
+        # 【关键修复】：只挑选出非 255 的有效像素求均值！绝不除以全图面积！
+        valid_mask = (target != self.ignore_index)
+        
+        if valid_mask.any():
+            return focal_term[valid_mask].mean()
+        else:
+            return torch.tensor(0.0, device=logit.device, requires_grad=True)
     
     def build_loss(self, mode: str = 'ce') -> callable:
         if mode == 'ce':

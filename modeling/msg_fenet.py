@@ -1,4 +1,5 @@
 # 文件路径: /workspace/deep参考1/modeling/msg_fenet.py
+print("--- MODEL VERSION CHECK: MSG-FENet Stage 2 (End-to-End Unfrozen Version) ---")
 
 import torch
 import torch.nn as nn
@@ -58,36 +59,32 @@ class Decoder_Object(nn.Module):
 
 class MSG_FENet_Stage2(nn.Module):
     """
-    【核心类】MSG-FENet Stage 2 总装配平台
-    采用组合 (Composition) 和 Hook 技术，完全隔离 Stage 1 的计算图。
+    【核心类】MSG-FENet Stage 2 总装配平台 (端到端解封版)
+    采用组合 (Composition) 和 Hook 技术。解封 Backbone 以突破 mIoU 瓶颈。
     """
     def __init__(self, stage1_model, num_object_classes=12, BatchNorm=nn.BatchNorm2d):
         super(MSG_FENet_Stage2, self).__init__()
         
-        # 1. 装载并彻底冻结 Stage 1 引擎
+        # 1. 装载 Stage 1 引擎 (解封：不再冻结 requires_grad)
         self.stage1_model = stage1_model
-        print("[MSG-FENet] Freezing all parameters of the Stage 1 model...")
-        for param in self.stage1_model.parameters():
-            param.requires_grad = False
-        self.stage1_model.eval() # 锁定 BN 和 Dropout
+        print("[MSG-FENet] Unfreezing Stage 1 model for End-to-End fine-tuning...")
+        # 注意：这里我们删除了 param.requires_grad = False 和 eval()，允许网络更新
         
         # 2. 准备“传感器”数据容器
         self.intermediate_features = {}
         
         # 3. 定义并挂载 Hooks (钩子)
-        # 针对 Backbone：它的输出是元组 (x, low_level_feat)，我们截取索引 [1]
         def get_backbone_hook(name):
             def hook(model, input, output):
                 self.intermediate_features[name] = output[1]
             return hook
             
-        # 针对 ASPP：它的输出直接是 aspp_feat
         def get_aspp_hook(name):
             def hook(model, input, output):
                 self.intermediate_features[name] = output
             return hook
             
-        # 挂载传感器！(注意不修改原来代码的一丝一毫)
+        # 挂载传感器！
         self.stage1_model.backbone.register_forward_hook(get_backbone_hook('low_level'))
         self.stage1_model.aspp.register_forward_hook(get_aspp_hook('aspp_feat'))
 
@@ -119,13 +116,10 @@ class MSG_FENet_Stage2(nn.Module):
         input_size = input.size()[2:] # H, W (例如 513x513)
         
         # ==========================================
-        # 步骤 A: 运行引擎 (绝对切断梯度)
+        # 步骤 A: 运行引擎 (连通计算图，允许梯度回传)
         # ==========================================
-        with torch.no_grad():
-            # 确保引擎始终处于 eval 模式
-            self.stage1_model.eval() 
-            # 前向传播！此时 Hooks 会自动把特征填入 self.intermediate_features
-            stage1_predictions = self.stage1_model(input)
+        # 去掉了 with torch.no_grad()，此时梯度可以流回 Backbone
+        stage1_predictions = self.stage1_model(input)
             
         # ==========================================
         # 步骤 B: 提取截获的数据
@@ -133,13 +127,15 @@ class MSG_FENet_Stage2(nn.Module):
         aspp_feat = self.intermediate_features['aspp_feat']
         low_level_feat = self.intermediate_features['low_level']
         logit_objectness = stage1_predictions['objectness']
-        logit_stuff = stage1_predictions['stuff'] # 我们把 stuff 也返回，用于后续评估
+        logit_stuff = stage1_predictions['stuff']
 
         # ==========================================
-        # 步骤 C: Stage 2 专属数据流 (梯度从这里开始流动！)
+        # 步骤 C: Stage 2 专属数据流
         # ==========================================
         # 1. 融合 ASPP 与 Objectness 先验
-        fused_high_level = self.feature_fusion(aspp_feat, logit_objectness)
+        # 【关键保护】：给 logit_objectness 加 .detach()！
+        # 因为我们不想让 Stage 2 改变物体类的 Loss 倒流回去破坏 Stage 1 的二分类头。
+        fused_high_level = self.feature_fusion(aspp_feat, logit_objectness.detach())
         
         # 2. 压缩低层特征 (256 -> 48)
         compressed_low_level = self.low_level_compressor(low_level_feat)
