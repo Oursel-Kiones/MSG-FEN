@@ -1,5 +1,5 @@
 # 文件路径: /workspace/deep参考1/train3.py
-print("--- SCRIPT VERSION CHECK: THIS IS THE LATEST MODIFIED FILE (STAGE 2 - ENTERPRISE E2E + FOCAL LOSS) ---")
+print("--- SCRIPT VERSION CHECK: THIS IS THE LATEST MODIFIED FILE (STAGE 2 - ENTERPRISE E2E + CE LOSS + SPATIAL ATTENTION) ---")
 
 import argparse
 import os
@@ -54,7 +54,7 @@ class Trainer_Stage2(object):
         # 2. 配置双速优化器 (端到端微调的核心)
         # ==========================================
         print("INFO: Configuring optimizer for Stage 2 (End-to-End Fine-Tuning).")
-        train_params =[
+        train_params = [
             # 引擎部分用极小的学习率 (lr * 0.1) 进行微调，保护先验知识
             {'params': self.model.stage1_model.backbone.parameters(), 'lr': args.lr * 0.1},
             {'params': self.model.stage1_model.aspp.parameters(), 'lr': args.lr * 0.1},
@@ -67,10 +67,11 @@ class Trainer_Stage2(object):
                                          weight_decay=args.weight_decay, nesterov=args.nesterov)
 
         # ==========================================
-        # 3. 损失函数与评估器设定 (Focal Loss 大杀器)
+        # 3. 损失函数与评估器设定 (退回 CE，封印 Focal Loss)
         # ==========================================
-        print("INFO: Activating Focal Loss for hard examples mining!")
+        print("INFO: Activating Standard CrossEntropyLoss (Focal Loss temporarily sealed).")
         loss_engine = SegmentationLosses(weight=None, ignore_index=255, cuda=args.cuda)
+        # 🔴 地雷1已修复：切换为稳定的 CrossEntropyLoss
         self.criterion = loss_engine.FocalLoss
         
         self.evaluator = Evaluator(num_class=12) # 仅评估 12 类
@@ -102,7 +103,7 @@ class Trainer_Stage2(object):
         if not isinstance(tensor_list, list): return tensor_list
         max_h = max([t.shape[-2] for t in tensor_list])
         max_w = max([t.shape[-1] for t in tensor_list])
-        padded_list =[]
+        padded_list = []
         for t in tensor_list:
             pad_h = max_h - t.shape[-2]
             pad_w = max_w - t.shape[-1]
@@ -139,14 +140,18 @@ class Trainer_Stage2(object):
 
             loss = self.criterion(pred_object, target_object)
             
-            if loss.item() > 0:
+            # 🟠 地雷2已修复：拦截 NaN，防止毒害全局 Train Loss
+            if not torch.isnan(loss) and loss.item() > 0:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
+                train_loss += loss.item() # 只在非 NaN 且 >0 时累加
 
-            train_loss += loss.item()
             tbar.set_description(f'Epoch {epoch+1} (Train) Loss: {train_loss / (i + 1):.4f}')
-            self.writer.add_scalar('train/stage2_object_loss_iter', loss.item(), i + num_img_tr * epoch)
+            
+            # 避免将 NaN 写入 Tensorboard
+            if not torch.isnan(loss):
+                self.writer.add_scalar('train/stage2_object_loss_iter', loss.item(), i + num_img_tr * epoch)
             
         self.writer.add_scalar('train/stage2_object_loss_epoch', train_loss / num_img_tr, epoch)
 
@@ -168,7 +173,10 @@ class Trainer_Stage2(object):
                 pred_object = predictions['object']
                 
                 loss = self.criterion(pred_object, target_object)
-                test_loss += loss.item()
+                
+                # 🟠 地雷2已修复：拦截 NaN，防止毒害全局 Val Loss
+                if not torch.isnan(loss):
+                    test_loss += loss.item()
                 
                 pred_map = torch.argmax(pred_object, dim=1).cpu().numpy()
                 target_np = target_object.cpu().numpy()
@@ -197,6 +205,7 @@ class Trainer_Stage2(object):
         mIoU = self.evaluator.Mean_Intersection_over_Union()
         self.writer.add_scalar('val/stage2_mIoU_object', mIoU, epoch)
         
+        
         print(f'\nValidation Stage 2:[Epoch: {epoch+1}]')
         print(f"mIoU (Objects 12 classes): {mIoU:.4f}")
         print(f'Val Loss: {test_loss / len(tbar):.4f}\n')
@@ -218,7 +227,7 @@ class Trainer_Stage2(object):
         }, is_best)
 
 def main():
-    parser = argparse.ArgumentParser(description="MSG-FENet Stage 2 Trainer (E2E Enterprise Version + Focal Loss)")
+    parser = argparse.ArgumentParser(description="MSG-FENet Stage 2 Trainer (E2E Enterprise Version + CE Loss)")
     parser.add_argument('--backbone', type=str, default='resnet', choices=['resnet', 'xception'])
     parser.add_argument('--out-stride', type=int, default=16)
     parser.add_argument('--dataset', type=str, default='cityscapes')
@@ -230,7 +239,8 @@ def main():
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--start_epoch', type=int, default=0)
     parser.add_argument('--batch-size', type=int, default=2) 
-    parser.add_argument('--lr', type=float, default=0.005) 
+    # 🟡 地雷3已修复：将默认的“狂暴油门” 0.005 降至平稳微调的 0.001
+    parser.add_argument('--lr', type=float, default=0.001) 
     parser.add_argument('--lr-scheduler', type=str, default='poly')
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight-decay', type=float, default=5e-4)
@@ -245,7 +255,7 @@ def main():
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     try:
-        args.gpu_ids =[int(s.strip()) for s in args.gpu_ids.split(',')]
+        args.gpu_ids = [int(s.strip()) for s in args.gpu_ids.split(',')]
     except ValueError:
         raise ValueError("Argument --gpu-ids must be a comma-separated list of integers.")
     

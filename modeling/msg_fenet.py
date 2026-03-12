@@ -1,5 +1,5 @@
 # 文件路径: /workspace/deep参考1/modeling/msg_fenet.py
-print("--- MODEL VERSION CHECK: MSG-FENet Stage 2 (End-to-End Unfrozen Version) ---")
+print("--- MODEL VERSION CHECK: MSG-FENet Stage 2 (RESIDUAL Attention Version) ---")
 
 import torch
 import torch.nn as nn
@@ -7,8 +7,9 @@ import torch.nn.functional as F
 
 class FeatureFusionModule(nn.Module):
     """
-    专属的特征融合模块。
-    将来自 ASPP 的高层特征与 Stage 1 的 objectness 预测图进行融合。
+    专属的特征融合模块 (Residual Attention 终极修复版)。
+    使用残差注意力机制，既保留全局上下文特征（防止大类雪崩），
+    又利用 Stage 1 的 Objectness 概率图强化前景物体（拉升长尾小类）。
     """
     def __init__(self, in_channels, out_channels, BatchNorm=nn.BatchNorm2d):
         super(FeatureFusionModule, self).__init__()
@@ -19,15 +20,23 @@ class FeatureFusionModule(nn.Module):
         )
 
     def forward(self, high_level_features, objectness_logit):
-        # 确保 objectness_logit 的尺寸与 high_level_features 一致
+        # 1. 确保 objectness_logit 的尺寸与 high_level_features 一致
         if objectness_logit.shape[2:] != high_level_features.shape[2:]:
             objectness_logit = F.interpolate(
                 objectness_logit, size=high_level_features.shape[2:], 
                 mode='bilinear', align_corners=True
             )
-        # 拼接：高层语义 (256) + 物体性先验 (1) = 257 通道
-        fused_input = torch.cat([high_level_features, objectness_logit], dim=1)
-        fused_output = self.conv_block(fused_input)
+            
+        # 2. 将 Raw Logits 转换为 0~1 的概率热力图 (藏宝图)
+        objectness_prob = torch.sigmoid(objectness_logit)
+        
+        # 3. 【核心破局点】：从硬掩码 (Hard Mask) 升级为残差注意力 (Residual Attention)
+        # F_out = F_in + (F_in * Mask)
+        # 作用：保留马路、建筑等上下文，同时高亮电线杆、栅栏等前景目标
+        attended_features = high_level_features + (high_level_features * objectness_prob)
+        
+        # 4. 传入卷积层进一步平滑和特征提炼
+        fused_output = self.conv_block(attended_features)
         return fused_output
 
 class Decoder_Object(nn.Module):
@@ -68,7 +77,6 @@ class MSG_FENet_Stage2(nn.Module):
         # 1. 装载 Stage 1 引擎 (解封：不再冻结 requires_grad)
         self.stage1_model = stage1_model
         print("[MSG-FENet] Unfreezing Stage 1 model for End-to-End fine-tuning...")
-        # 注意：这里我们删除了 param.requires_grad = False 和 eval()，允许网络更新
         
         # 2. 准备“传感器”数据容器
         self.intermediate_features = {}
@@ -102,8 +110,8 @@ class MSG_FENet_Stage2(nn.Module):
             nn.ReLU()
         )
         
-        # 融合模块: ASPP (256) + Objectness (1)
-        self.feature_fusion = FeatureFusionModule(in_channels=aspp_channels + 1, 
+        # 融合模块: 接收 Attention 过滤后的 ASPP 特征
+        self.feature_fusion = FeatureFusionModule(in_channels=aspp_channels, 
                                                   out_channels=aspp_channels, 
                                                   BatchNorm=BatchNorm)
         
@@ -118,7 +126,6 @@ class MSG_FENet_Stage2(nn.Module):
         # ==========================================
         # 步骤 A: 运行引擎 (连通计算图，允许梯度回传)
         # ==========================================
-        # 去掉了 with torch.no_grad()，此时梯度可以流回 Backbone
         stage1_predictions = self.stage1_model(input)
             
         # ==========================================
@@ -133,8 +140,7 @@ class MSG_FENet_Stage2(nn.Module):
         # 步骤 C: Stage 2 专属数据流
         # ==========================================
         # 1. 融合 ASPP 与 Objectness 先验
-        # 【关键保护】：给 logit_objectness 加 .detach()！
-        # 因为我们不想让 Stage 2 改变物体类的 Loss 倒流回去破坏 Stage 1 的二分类头。
+        # 【关键保护】：给 logit_objectness 加 .detach() 保持不变，完美阻断梯度污染！
         fused_high_level = self.feature_fusion(aspp_feat, logit_objectness.detach())
         
         # 2. 压缩低层特征 (256 -> 48)
